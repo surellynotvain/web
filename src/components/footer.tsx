@@ -22,6 +22,7 @@ export function Footer() {
             <Link href="/#about" className="text-muted hover:text-[rgb(var(--fg))] transition-colors">about</Link>
             <Link href="/projects" className="text-muted hover:text-[rgb(var(--fg))] transition-colors">projects</Link>
             <Link href="/blog" className="text-muted hover:text-[rgb(var(--fg))] transition-colors">blog</Link>
+            <Link href="/quiz" className="text-muted hover:text-[rgb(var(--fg))] transition-colors">quizzes</Link>
             <Link href="/contact" className="text-muted hover:text-[rgb(var(--fg))] transition-colors">contact</Link>
           </div>
           <div className="flex flex-col gap-2">
