@@ -35,6 +35,9 @@ The author is a polish developer working in web, apps, AI, and server ops.
 
 ## format of your reply
 Return ONLY the edited markdown text. No preamble. No "here is the edited text:". No trailing commentary. No code fences around the whole thing (unless the original was itself a code fence).
+
+## length
+Return the COMPLETE edited text, end to end. Do NOT truncate, abbreviate, or stop early. If you are editing a multi-paragraph text, return every paragraph. The output length should be approximately equal to the input length (shorter only when the action is "shorten"; longer only when the action is "expand"). Never output a partial sentence.
 `.trim();
 
 export type AiAction = "grammar" | "polish" | "expand" | "shorten" | "rewrite";
