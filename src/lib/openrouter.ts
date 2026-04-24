@@ -18,6 +18,12 @@ export type ChatOptions = {
   temperature?: number;
   maxTokens?: number;
   signal?: AbortSignal;
+  /**
+   * models to skip entirely — useful when a caller already tried a model
+   * and got back bad-quality output, and wants the next request to route
+   * past it. matched by exact string.
+   */
+  excludeModels?: string[];
 };
 
 export type ChatResult = {
@@ -187,13 +193,19 @@ export async function chatCompletionWithFallback(
   if (!key) throw new OpenRouterError("OPENROUTER_API key not configured");
 
   const chain = await buildModelChain(opts.model);
-  if (chain.length === 0) {
-    throw new OpenRouterError("no models configured");
+  const excluded = new Set(opts.excludeModels ?? []);
+  const filteredChain = chain.filter((m) => !excluded.has(m));
+  if (filteredChain.length === 0) {
+    throw new OpenRouterError(
+      excluded.size > 0
+        ? "no models left after exclusions"
+        : "no models configured",
+    );
   }
 
   const attempts: ChatResult["attempts"] = [];
 
-  for (const model of chain) {
+  for (const model of filteredChain) {
     const result = await callOnce(key, model, messages, opts);
 
     if (result.ok) {

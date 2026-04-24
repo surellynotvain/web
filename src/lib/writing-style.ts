@@ -81,3 +81,32 @@ export const AI_ACTION_DESCRIPTIONS: Record<AiAction, string> = {
 
 // Input size cap to avoid runaway calls.
 export const AI_MAX_INPUT_CHARS = 8000;
+
+/**
+ * Expected output-length ratio per action. Used by the API route to detect
+ * obviously-truncated free-model responses (e.g. a 2000-char rewrite coming
+ * back as 200 chars because the model stopped early).
+ *
+ * Returned bounds are inclusive. If the output is outside [min, max] *and*
+ * the input is long enough for the signal to be meaningful, the call is
+ * treated as a bad response and the fallback chain continues to the next model.
+ */
+export function expectedLengthRatio(
+  action: AiAction,
+): { min: number; max: number } {
+  switch (action) {
+    case "shorten":
+      return { min: 0.35, max: 0.95 };
+    case "expand":
+      return { min: 1.05, max: 3.0 };
+    case "grammar":
+      return { min: 0.8, max: 1.25 };
+    case "polish":
+      return { min: 0.7, max: 1.35 };
+    case "rewrite":
+      return { min: 0.6, max: 1.5 };
+  }
+}
+
+/** input-length threshold below which ratio checks are skipped (too noisy) */
+export const LENGTH_CHECK_MIN_INPUT = 150;

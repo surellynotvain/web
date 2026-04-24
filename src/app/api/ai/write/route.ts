@@ -6,9 +6,13 @@ import {
   chatCompletionWithFallback,
   isOpenRouterConfigured,
   OpenRouterError,
+  type ChatResult,
 } from "@/lib/openrouter";
+import { clearPreferredModel } from "@/lib/openrouter-state";
 import {
   AI_MAX_INPUT_CHARS,
+  LENGTH_CHECK_MIN_INPUT,
+  expectedLengthRatio,
   promptForAction,
   VAINIE_STYLE_GUIDE,
   type AiAction,
@@ -24,6 +28,9 @@ const ALLOWED_ACTIONS: AiAction[] = [
   "shorten",
   "rewrite",
 ];
+
+/** cap on how many total attempts across all models per request */
+const MAX_TOTAL_ATTEMPTS = 6;
 
 export async function POST(req: NextRequest) {
   // admin only — this endpoint costs money to run
@@ -93,58 +100,139 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const typedAction = action as AiAction;
   const userPrompt = promptForAction(
-    action as AiAction,
+    typedAction,
     trimmed,
     typeof context === "string" ? context : undefined,
   );
 
   // size the output budget relative to input — free models are often capped
   // at low defaults and will truncate without enough room. rough rule:
-  //   ~1 token per 3-4 chars → grant 3x the input tokens plus headroom,
-  //   bounded by a sane ceiling.
+  //   ~1 token per 3-4 chars → grant 3x the input tokens plus headroom.
   const approxInputTokens = Math.ceil(trimmed.length / 3);
   const dynamicMaxTokens = Math.min(
     8192,
     Math.max(1024, approxInputTokens * 3 + 512),
   );
 
-  try {
-    const result = await chatCompletionWithFallback(
-      [
-        { role: "system", content: VAINIE_STYLE_GUIDE },
-        { role: "user", content: userPrompt },
-      ],
-      { temperature: 0.3, maxTokens: dynamicMaxTokens },
-    );
-    return NextResponse.json({
-      ok: true,
-      text: stripWrappingQuotesAndFences(result.text),
-      action,
-      model: result.model,
-      // how many fallbacks we went through (useful to surface in UI)
-      fallbackCount: result.attempts.length,
-    });
-  } catch (err) {
-    if (err instanceof OpenRouterError) {
-      return NextResponse.json(
+  // track all attempts (including ones rejected for being truncated) so we
+  // can surface them on final failure
+  const allAttempts: ChatResult["attempts"] = [];
+  let attemptsUsed = 0;
+
+  // we may need to re-call chatCompletionWithFallback if the returned text
+  // looks truncated. the fallback lib already moves past 429/404/etc; this
+  // loop handles the "200 ok but garbage" case by nudging past the winning
+  // model and trying the next one.
+  const excludedModels = new Set<string>();
+
+  while (attemptsUsed < MAX_TOTAL_ATTEMPTS) {
+    attemptsUsed += 1;
+
+    let result: ChatResult;
+    try {
+      result = await chatCompletionWithFallback(
+        [
+          { role: "system", content: VAINIE_STYLE_GUIDE },
+          { role: "user", content: userPrompt },
+        ],
         {
-          error: err.message,
-          attempts: err.attempts ?? [],
-        },
-        {
-          status:
-            err.status && err.status >= 400 && err.status < 600
-              ? err.status
-              : 502,
+          temperature: 0.3,
+          maxTokens: dynamicMaxTokens,
+          // exclude models we've already seen return truncated garbage
+          excludeModels: Array.from(excludedModels),
         },
       );
+    } catch (err) {
+      if (err instanceof OpenRouterError) {
+        if (err.attempts) allAttempts.push(...err.attempts);
+        return NextResponse.json(
+          {
+            error: err.message,
+            attempts: allAttempts,
+          },
+          {
+            status:
+              err.status && err.status >= 400 && err.status < 600
+                ? err.status
+                : 502,
+          },
+        );
+      }
+      return NextResponse.json(
+        { error: err instanceof Error ? err.message : "ai call failed" },
+        { status: 500 },
+      );
     }
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "ai call failed" },
-      { status: 500 },
-    );
+
+    allAttempts.push(...result.attempts);
+
+    const cleaned = stripWrappingQuotesAndFences(result.text);
+
+    // output sanity: catch obvious truncation / under-response
+    if (looksTruncated(trimmed, cleaned, typedAction)) {
+      console.warn(
+        `[ai/write] ${result.model} returned truncated output (${cleaned.length} chars vs ${trimmed.length} input) — retrying with next model`,
+      );
+      allAttempts.push({
+        model: result.model,
+        error: `output looks truncated (${cleaned.length}/${trimmed.length} chars)`,
+      });
+      excludedModels.add(result.model);
+      // this model was just "preferred"; reset the cache so next call starts fresh
+      await clearPreferredModel().catch(() => {});
+      continue;
+    }
+
+    return NextResponse.json({
+      ok: true,
+      text: cleaned,
+      action,
+      model: result.model,
+      fallbackCount: allAttempts.length - 1, // minus the success itself
+    });
   }
+
+  // ran out of attempts
+  return NextResponse.json(
+    {
+      error:
+        "every model returned a truncated or unusable response. try again, or simplify your selection.",
+      attempts: allAttempts,
+    },
+    { status: 502 },
+  );
+}
+
+/**
+ * Heuristic: has the model stopped early? Only applies to inputs long enough
+ * for the signal to be meaningful; short inputs are too noisy.
+ */
+function looksTruncated(
+  input: string,
+  output: string,
+  action: AiAction,
+): boolean {
+  if (input.length < LENGTH_CHECK_MIN_INPUT) return false;
+  if (!output.trim()) return true;
+
+  const ratio = output.length / input.length;
+  const { min, max } = expectedLengthRatio(action);
+  if (ratio < min || ratio > max) return true;
+
+  // ends mid-sentence? looks for a closing punctuation or code fence within
+  // the last 40 chars. false positives on lists without trailing period —
+  // accept that risk; better to re-roll than ship a cliff-hanger.
+  const tail = output.trimEnd().slice(-40);
+  const endsOk =
+    /[.!?)"\]`*_\-0-9]$|```\s*$/.test(tail) ||
+    tail.endsWith(">") || // html/markdown
+    tail.endsWith(":") ||
+    tail.endsWith("—");
+  if (!endsOk) return true;
+
+  return false;
 }
 
 /**
