@@ -81,8 +81,13 @@ function buildModelChain(explicit?: string): string[] {
   return out;
 }
 
-/** statuses that should trigger a fallback to the next model */
-const RETRYABLE_STATUSES = new Set([402, 429, 503]);
+/** statuses that should trigger a fallback to the next model.
+ *  - 402: payment required / model requires credits
+ *  - 404: model not found / provider dropped support
+ *  - 429: rate limited
+ *  - 503: provider capacity / temporary outage
+ */
+const RETRYABLE_STATUSES = new Set([402, 404, 429, 503]);
 
 export function isOpenRouterConfigured(): boolean {
   return Boolean(readApiKey());
