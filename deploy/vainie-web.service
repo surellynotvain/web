@@ -1,0 +1,35 @@
+[Unit]
+Description=vainie.pl Next.js website
+After=network.target
+
+[Service]
+Type=simple
+User=VAINIE
+WorkingDirectory=/home/VAINIE/Dokumenty/Projects/vainie-web
+EnvironmentFile=/home/VAINIE/Dokumenty/Projects/vainie-web/.env.local
+Environment=NODE_ENV=production
+Environment=PORT=6967
+# 0.0.0.0 = reachable on LAN at http://<lan-ip>:6967
+# 127.0.0.1 = only reachable through nginx
+Environment=HOSTNAME=0.0.0.0
+ExecStart=/usr/bin/npm start
+Restart=on-failure
+RestartSec=5
+
+# hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+# read-only home except for the app's own directory + data + uploads
+ReadWritePaths=/home/VAINIE/Dokumenty/Projects/vainie-web/data
+ReadWritePaths=/home/VAINIE/Dokumenty/Projects/vainie-web/public/uploads
+ReadWritePaths=/home/VAINIE/Dokumenty/Projects/vainie-web/.next
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

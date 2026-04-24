@@ -1,0 +1,43 @@
+{
+  "name": "vainie-web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 6967",
+    "build": "next build",
+    "start": "next start -p 6967",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "admin:create": "node scripts/create-admin.cjs",
+    "project:editor": "python3 scripts/project_editor.py",
+    "passwords:build": "node scripts/build-password-bloom.cjs"
+  },
+  "dependencies": {
+    "@node-rs/argon2": "^2.0.2",
+    "better-sqlite3": "^12.9.0",
+    "drizzle-orm": "^0.45.2",
+    "geist": "^1.7.0",
+    "isomorphic-dompurify": "^3.10.0",
+    "marked": "^18.0.2",
+    "next": "^15.0.3",
+    "next-themes": "^0.4.3",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "server-only": "^0.0.1",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3.3.5",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "autoprefixer": "^10.4.20",
+    "drizzle-kit": "^0.31.10",
+    "eslint": "^9.39.4",
+    "eslint-config-next": "^15.5.15",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.15",
+    "typescript": "^5.6.3"
+  }
+}
