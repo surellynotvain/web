@@ -7,6 +7,7 @@ import type { OAuthProvider } from "@/lib/oauth";
 const providerLabels: Record<OAuthProvider, string> = {
   github: "github",
   microsoft: "microsoft",
+  google: "google",
 };
 
 export function LoginForm({

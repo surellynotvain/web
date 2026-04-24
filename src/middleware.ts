@@ -18,8 +18,8 @@ export function middleware() {
     // next.js inlines some styles/scripts, and we use next/font
     "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
     "style-src 'self' 'unsafe-inline'",
-    // tidal, github avatars, pokéapi sprites, wikipedia thumbnails, our uploads
-    "img-src 'self' data: blob: https://resources.tidal.com https://*.tidal.com https://images.tidal.com https://avatars.githubusercontent.com https://raw.githubusercontent.com https://graph.microsoft.com https://upload.wikimedia.org",
+    // tidal, github avatars, google avatars, pokéapi sprites, wikipedia thumbnails, our uploads
+    "img-src 'self' data: blob: https://resources.tidal.com https://*.tidal.com https://images.tidal.com https://avatars.githubusercontent.com https://raw.githubusercontent.com https://graph.microsoft.com https://upload.wikimedia.org https://lh3.googleusercontent.com https://lh4.googleusercontent.com https://lh5.googleusercontent.com https://lh6.googleusercontent.com",
     // tidal embed player + oauth redirects
     "frame-src https://embed.tidal.com https://*.tidal.com",
     // server-side fetches only; we allow openrouter for the ai writing assistant
@@ -28,7 +28,7 @@ export function middleware() {
     "object-src 'none'",
     "frame-ancestors 'none'",
     "base-uri 'self'",
-    "form-action 'self' https://github.com https://login.microsoftonline.com",
+    "form-action 'self' https://github.com https://login.microsoftonline.com https://accounts.google.com",
   ].join("; ");
 
   headers.set("Content-Security-Policy", csp);

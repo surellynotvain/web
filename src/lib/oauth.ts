@@ -1,7 +1,7 @@
 import "server-only";
 import { newId } from "@/lib/crypto";
 
-export type OAuthProvider = "github" | "microsoft";
+export type OAuthProvider = "github" | "microsoft" | "google";
 
 // Shape of the bits of the GitHub /user response we actually read.
 type GithubUser = {
@@ -19,6 +19,19 @@ type MicrosoftUser = {
   mail?: string | null;
 };
 
+// Shape of the bits of Google /userinfo we actually read.
+// Docs: https://developers.google.com/identity/openid-connect/openid-connect#obtainuserinfo
+type GoogleUser = {
+  id?: string;
+  sub?: string; // OIDC-style id (alias of id)
+  email?: string;
+  verified_email?: boolean;
+  email_verified?: boolean;
+  name?: string;
+  given_name?: string;
+  picture?: string;
+};
+
 type ProviderConfig<T = unknown> = {
   authUrl: string;
   tokenUrl: string;
@@ -26,6 +39,8 @@ type ProviderConfig<T = unknown> = {
   scope: string;
   clientId: () => string | undefined;
   clientSecret: () => string | undefined;
+  /** extra query params to append to the auth URL (e.g. google's access_type) */
+  extraAuthParams?: Record<string, string>;
   parseUser: (data: T, token: string) => Promise<{
     id: string;
     username: string;
@@ -37,6 +52,7 @@ type ProviderConfig<T = unknown> = {
 const providers: {
   github: ProviderConfig<GithubUser>;
   microsoft: ProviderConfig<MicrosoftUser>;
+  google: ProviderConfig<GoogleUser>;
 } = {
   github: {
     authUrl: "https://github.com/login/oauth/authorize",
@@ -87,6 +103,36 @@ const providers: {
       avatarUrl: null,
     }),
   },
+  google: {
+    authUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+    tokenUrl: "https://oauth2.googleapis.com/token",
+    userUrl: "https://www.googleapis.com/oauth2/v2/userinfo",
+    scope: "openid email profile",
+    clientId: () => process.env.GOOGLE_CLIENT_ID,
+    clientSecret: () => process.env.GOOGLE_CLIENT_SECRET,
+    extraAuthParams: {
+      // force account picker so users can switch between google accounts
+      prompt: "select_account",
+      // we only need a one-shot access token; no refresh needed for login
+      access_type: "online",
+    },
+    parseUser: async (u) => {
+      const id = u.sub ?? u.id;
+      if (!id) throw new Error("google user response missing id/sub");
+      const verified = Boolean(u.verified_email ?? u.email_verified);
+      const email = verified && u.email ? u.email : null;
+      const emailLocal = u.email?.split("@")[0];
+      return {
+        id: String(id),
+        username:
+          u.given_name?.toLowerCase().replace(/[^a-z0-9]/g, "") ||
+          emailLocal?.toLowerCase().replace(/[^a-z0-9]/g, "") ||
+          `g_${id}`,
+        email,
+        avatarUrl: u.picture ?? null,
+      };
+    },
+  },
 };
 
 export function isProviderConfigured(p: OAuthProvider): boolean {
@@ -112,6 +158,7 @@ export function buildAuthUrl(
     response_type: "code",
     scope: cfg.scope,
     state,
+    ...(cfg.extraAuthParams ?? {}),
   });
   return `${cfg.authUrl}?${params.toString()}`;
 }
@@ -177,8 +224,21 @@ export async function exchangeCodeAndFetchUser(
 
   // each provider's parseUser is typed to its own user shape; safe cast here
   // because the URL / token pairing guarantees the response shape.
-  if (provider === "github") {
-    return providers.github.parseUser(userJson as GithubUser, tokData.access_token);
+  switch (provider) {
+    case "github":
+      return providers.github.parseUser(
+        userJson as GithubUser,
+        tokData.access_token,
+      );
+    case "microsoft":
+      return providers.microsoft.parseUser(
+        userJson as MicrosoftUser,
+        tokData.access_token,
+      );
+    case "google":
+      return providers.google.parseUser(
+        userJson as GoogleUser,
+        tokData.access_token,
+      );
   }
-  return providers.microsoft.parseUser(userJson as MicrosoftUser, tokData.access_token);
 }
