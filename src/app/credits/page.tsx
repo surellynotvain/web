@@ -86,9 +86,9 @@ const GROUPS: Group[] = [
         license: "Apache-2.0",
       },
       {
-        name: "better-sqlite3",
-        url: "https://github.com/WiseLibs/better-sqlite3",
-        what: "synchronous sqlite bindings.",
+        name: "@libsql/client",
+        url: "https://github.com/tursodatabase/libsql-client-ts",
+        what: "sqlite-compatible client; works with local files and Turso remote.",
         license: "MIT",
       },
       {

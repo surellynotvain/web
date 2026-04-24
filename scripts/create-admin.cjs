@@ -6,15 +6,20 @@
  *
  * idempotent: if the user already exists, it just promotes them to admin and
  * resets the password.
+ *
+ * supports both:
+ *  - local sqlite (default; uses $DATA_DIR/vainie.db)
+ *  - remote turso (set TURSO_DATABASE_URL + TURSO_AUTH_TOKEN)
  */
 const path = require("node:path");
-const Database = require("better-sqlite3");
+const fs = require("node:fs");
+const { createClient } = require("@libsql/client");
 const argon = require("@node-rs/argon2");
 const crypto = require("node:crypto");
 
 // load .env.local
 try {
-  require("fs")
+  fs
     .readFileSync(path.join(process.cwd(), ".env.local"), "utf8")
     .split("\n")
     .forEach((line) => {
@@ -41,6 +46,20 @@ function parseArgs(argv) {
   return out;
 }
 
+function makeClient() {
+  const tursoUrl = process.env.TURSO_DATABASE_URL?.trim();
+  const tursoToken = process.env.TURSO_AUTH_TOKEN?.trim();
+  if (tursoUrl) {
+    console.log(`[admin:create] using turso: ${tursoUrl.replace(/\/\/.*@/, "//***@")}`);
+    return createClient({ url: tursoUrl, authToken: tursoToken });
+  }
+  const dataDir = process.env.DATA_DIR || "./data";
+  fs.mkdirSync(dataDir, { recursive: true });
+  const dbPath = path.join(dataDir, "vainie.db");
+  console.log(`[admin:create] using local sqlite: ${dbPath}`);
+  return createClient({ url: `file:${dbPath}` });
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const username = args.username;
@@ -62,15 +81,10 @@ async function main() {
     process.exit(1);
   }
 
-  const dataDir = process.env.DATA_DIR || "./data";
-  require("fs").mkdirSync(dataDir, { recursive: true });
-  const dbPath = path.join(dataDir, "vainie.db");
-  const db = new Database(dbPath);
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
+  const db = makeClient();
 
   // ensure schema (simplified — just users table is enough for this)
-  db.exec(`
+  const ddl = `
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       username TEXT NOT NULL,
@@ -81,10 +95,14 @@ async function main() {
       oauth_id TEXT,
       role TEXT NOT NULL DEFAULT 'user',
       avatar_url TEXT,
+      allow_ai_training INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
     );
     CREATE UNIQUE INDEX IF NOT EXISTS users_username_lower_idx ON users(username_lower);
-  `);
+  `;
+  for (const stmt of ddl.split(";").map((s) => s.trim()).filter(Boolean)) {
+    await db.execute(stmt);
+  }
 
   const hash = await argon.hash(password, {
     memoryCost: 19456,
@@ -93,14 +111,17 @@ async function main() {
     parallelism: 1,
   });
 
-  const existing = db
-    .prepare("SELECT id FROM users WHERE username_lower = ?")
-    .get(username.toLowerCase());
+  const existingRes = await db.execute({
+    sql: "SELECT id FROM users WHERE username_lower = ?",
+    args: [username.toLowerCase()],
+  });
+  const existing = existingRes.rows[0];
 
   if (existing) {
-    db.prepare(
-      "UPDATE users SET password_hash = ?, role = 'admin', email = COALESCE(?, email) WHERE id = ?",
-    ).run(hash, email, existing.id);
+    await db.execute({
+      sql: "UPDATE users SET password_hash = ?, role = 'admin', email = COALESCE(?, email) WHERE id = ?",
+      args: [hash, email, existing.id],
+    });
     console.log(`✔ updated existing user '${username}' → admin, password reset.`);
   } else {
     const id = crypto
@@ -108,13 +129,16 @@ async function main() {
       .toString("base64url")
       .replace(/[^A-Za-z0-9]/g, "")
       .slice(0, 21);
-    db.prepare(
-      "INSERT INTO users (id, username, username_lower, email, password_hash, role) VALUES (?, ?, ?, ?, ?, 'admin')",
-    ).run(id, username, username.toLowerCase(), email, hash);
+    await db.execute({
+      sql: "INSERT INTO users (id, username, username_lower, email, password_hash, role) VALUES (?, ?, ?, ?, ?, 'admin')",
+      args: [id, username, username.toLowerCase(), email, hash],
+    });
     console.log(`✔ created admin user '${username}'.`);
   }
 
-  db.close();
+  if (typeof db.close === "function") {
+    await db.close();
+  }
   console.log(`done. you can now log in at /login with these credentials.`);
 }
 

@@ -1,46 +1,57 @@
 import "server-only";
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
+import { createClient, type Client } from "@libsql/client";
+import { drizzle } from "drizzle-orm/libsql";
 import { sql } from "drizzle-orm";
 import * as schema from "./schema";
 import path from "node:path";
 import fs from "node:fs";
 
-const DATA_DIR = process.env.DATA_DIR || "./data";
-const DB_PATH = path.join(DATA_DIR, "vainie.db");
+// ---------- connection resolution ----------
+// - prefer TURSO_DATABASE_URL + TURSO_AUTH_TOKEN if set (remote / serverless)
+// - fall back to local sqlite file at $DATA_DIR/vainie.db
+// both work identically since libsql is sqlite-compatible.
 
-// make sure the data dir exists
-if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+const DATA_DIR = process.env.DATA_DIR || "./data";
+const LOCAL_DB_PATH = path.join(DATA_DIR, "vainie.db");
+
+const TURSO_URL = process.env.TURSO_DATABASE_URL?.trim();
+const TURSO_TOKEN = process.env.TURSO_AUTH_TOKEN?.trim();
+
+function makeClient(): Client {
+  if (TURSO_URL) {
+    return createClient({
+      url: TURSO_URL,
+      authToken: TURSO_TOKEN,
+    });
+  }
+  // local mode: file URL. ensure the directory exists first.
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+  return createClient({
+    url: `file:${LOCAL_DB_PATH}`,
+  });
 }
 
-// singleton — important across hot reloads
+// singleton — survives hot reloads in dev
 const globalForDb = globalThis as unknown as {
-  __sqlite?: Database.Database;
+  __libsql?: Client;
 };
 
-const sqlite =
-  globalForDb.__sqlite ??
-  new Database(DB_PATH, {
-    // readonly: false (default)
-  });
+const client = globalForDb.__libsql ?? makeClient();
+globalForDb.__libsql = client;
 
-globalForDb.__sqlite = sqlite;
+export const db = drizzle(client, { schema });
 
-// performance + safety pragmas
-sqlite.pragma("journal_mode = WAL");
-sqlite.pragma("synchronous = NORMAL");
-sqlite.pragma("foreign_keys = ON");
-sqlite.pragma("busy_timeout = 5000");
-
-export const db = drizzle(sqlite, { schema });
-
-// --- minimal migration runner ---
+// ---------- minimal migration runner ----------
 // we keep schema-driven migrations in a tiny in-code fashion to avoid needing
-// a separate drizzle-kit push at runtime. this idempotently creates the tables
-// if they don't exist.
-function runMigrations() {
-  sqlite.exec(`
+// a separate drizzle-kit push at runtime. idempotent CREATE TABLE IF NOT EXISTS
+// for the initial schema, plus ALTER TABLE for additive columns on older dbs.
+
+async function runMigrations() {
+  // NOTE: libsql's batch() takes an array of statements; splitting by ';'
+  // and filtering empties keeps the source readable.
+  const ddl = `
     CREATE TABLE IF NOT EXISTS users (
       id TEXT PRIMARY KEY,
       username TEXT NOT NULL,
@@ -103,32 +114,64 @@ function runMigrations() {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS likes_cookie_idx ON likes(post_id, cookie_id) WHERE cookie_id IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS likes_user_idx ON likes(post_id, user_id) WHERE user_id IS NOT NULL;
-  `);
+  `;
 
-  // --- additive ALTERs for existing databases ---
-  // these are idempotent: we only add a column if it doesn't already exist.
-  ensureColumn("users", "allow_ai_training", "INTEGER NOT NULL DEFAULT 0");
-  ensureColumn("comments", "allow_ai_training", "INTEGER NOT NULL DEFAULT 0");
+  const stmts = ddl
+    .split(";")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  for (const stmt of stmts) {
+    await client.execute(stmt);
+  }
+
+  // pragmas — only applicable to local sqlite; Turso manages its own.
+  if (!TURSO_URL) {
+    try {
+      await client.execute("PRAGMA journal_mode = WAL");
+      await client.execute("PRAGMA synchronous = NORMAL");
+      await client.execute("PRAGMA foreign_keys = ON");
+      await client.execute("PRAGMA busy_timeout = 5000");
+    } catch (err) {
+      console.warn("[db] pragma setup failed (non-fatal)", err);
+    }
+  }
+
+  // additive ALTERs for existing databases
+  await ensureColumn("users", "allow_ai_training", "INTEGER NOT NULL DEFAULT 0");
+  await ensureColumn("comments", "allow_ai_training", "INTEGER NOT NULL DEFAULT 0");
 }
 
-function ensureColumn(table: string, column: string, definition: string) {
+async function ensureColumn(
+  table: string,
+  column: string,
+  definition: string,
+) {
   try {
-    const rows = sqlite
-      .prepare(`PRAGMA table_info(${table})`)
-      .all() as Array<{ name: string }>;
-    if (rows.some((r) => r.name === column)) return;
-    sqlite.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
+    const result = await client.execute(`PRAGMA table_info(${table})`);
+    const cols = result.rows.map((r) => String(r.name));
+    if (cols.includes(column)) return;
+    await client.execute(
+      `ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`,
+    );
   } catch (err) {
     console.warn(`[db] ensureColumn ${table}.${column} failed`, err);
   }
 }
 
+// migrations run once per server process
 const globalForMigrations = globalThis as unknown as { __migrated?: boolean };
 if (!globalForMigrations.__migrated) {
-  runMigrations();
   globalForMigrations.__migrated = true;
+  // fire and forget; any error is logged. queries will throw if tables are
+  // genuinely missing, so failures surface quickly.
+  runMigrations().catch((err) => {
+    console.error("[db] migrations failed", err);
+    globalForMigrations.__migrated = false;
+  });
 }
 
-// expose raw sqlite db for advanced queries if needed
-export { sqlite };
+// re-export sql helper for callers that import from this module
 export { sql };
+// expose the raw client for rare cases that need it (e.g. admin scripts)
+export { client as sqlite };
