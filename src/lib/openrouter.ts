@@ -1,4 +1,5 @@
 import "server-only";
+import { getPreferredModel, setPreferredModel } from "./openrouter-state";
 
 // Thin OpenRouter client. Docs: https://openrouter.ai/docs
 // Reads OPENROUTER_API (legacy name used in .env.local) or OPENROUTER_API_KEY.
@@ -61,13 +62,18 @@ function readFallbackModels(): string[] {
 /**
  * Build the ordered list of candidate models:
  *   1. explicit `opts.model` (if provided)
- *   2. OPENROUTER_DEFAULT_MODEL
- *   3. each of OPENROUTER_FALLBACK_MODELS in order
+ *   2. the cached preferred model (last one that worked this server lifetime)
+ *   3. OPENROUTER_DEFAULT_MODEL
+ *   4. OPENROUTER_SECONDARY_MODEL
+ *   5. OPENROUTER_BACKUP_MODEL
+ *   6. each of OPENROUTER_FALLBACK_MODELS in order
  * Duplicates are removed while preserving first-seen order.
  */
-function buildModelChain(explicit?: string): string[] {
+async function buildModelChain(explicit?: string): Promise<string[]> {
+  const preferred = await getPreferredModel();
   const raw = [
     ...(explicit ? [explicit] : []),
+    ...(preferred ? [preferred] : []),
     readDefaultModel(),
     ...readFallbackModels(),
   ];
@@ -180,7 +186,7 @@ export async function chatCompletionWithFallback(
   const key = readApiKey();
   if (!key) throw new OpenRouterError("OPENROUTER_API key not configured");
 
-  const chain = buildModelChain(opts.model);
+  const chain = await buildModelChain(opts.model);
   if (chain.length === 0) {
     throw new OpenRouterError("no models configured");
   }
@@ -191,6 +197,11 @@ export async function chatCompletionWithFallback(
     const result = await callOnce(key, model, messages, opts);
 
     if (result.ok) {
+      // persist the winner so future requests start here instead of
+      // hammering the original default that may be 429'd
+      setPreferredModel(model).catch(() => {
+        /* non-fatal */
+      });
       return { text: result.text, model, attempts };
     }
 
