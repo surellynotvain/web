@@ -99,13 +99,23 @@ export async function POST(req: NextRequest) {
     typeof context === "string" ? context : undefined,
   );
 
+  // size the output budget relative to input — free models are often capped
+  // at low defaults and will truncate without enough room. rough rule:
+  //   ~1 token per 3-4 chars → grant 3x the input tokens plus headroom,
+  //   bounded by a sane ceiling.
+  const approxInputTokens = Math.ceil(trimmed.length / 3);
+  const dynamicMaxTokens = Math.min(
+    8192,
+    Math.max(1024, approxInputTokens * 3 + 512),
+  );
+
   try {
     const result = await chatCompletionWithFallback(
       [
         { role: "system", content: VAINIE_STYLE_GUIDE },
         { role: "user", content: userPrompt },
       ],
-      { temperature: 0.3 },
+      { temperature: 0.3, maxTokens: dynamicMaxTokens },
     );
     return NextResponse.json({
       ok: true,
