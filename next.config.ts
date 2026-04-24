@@ -18,6 +18,8 @@ const nextConfig: NextConfig = {
       { protocol: "https", hostname: "lh4.googleusercontent.com" },
       { protocol: "https", hostname: "lh5.googleusercontent.com" },
       { protocol: "https", hostname: "lh6.googleusercontent.com" },
+      // Vercel Blob storage (image uploads when deployed on Vercel)
+      { protocol: "https", hostname: "**.public.blob.vercel-storage.com" },
     ],
   },
   async redirects() {

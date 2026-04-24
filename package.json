@@ -15,6 +15,7 @@
   "dependencies": {
     "@libsql/client": "^0.17.3",
     "@node-rs/argon2": "^2.0.2",
+    "@vercel/blob": "^2.3.3",
     "drizzle-orm": "^0.45.2",
     "geist": "^1.7.0",
     "isomorphic-dompurify": "^3.10.0",

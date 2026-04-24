@@ -4,6 +4,12 @@ import path from "node:path";
 import sharp from "sharp";
 import { newId } from "@/lib/crypto";
 
+// Upload destinations:
+// - local filesystem (default) — writes to /public/uploads, URL is /uploads/...
+// - Vercel Blob (when BLOB_READ_WRITE_TOKEN is set) — writes to vercel blob
+//   storage, URL is the returned public CDN URL.
+// Both run through the same sharp pipeline (webp re-encode, resize, LQIP).
+
 const UPLOAD_DIR = path.join(process.cwd(), "public", "uploads");
 const MAX_BYTES = 8 * 1024 * 1024; // 8 MB raw input
 const MAX_WIDTH = 1600;            // downscale any larger
@@ -17,6 +23,10 @@ const ACCEPTED_MIMES = new Set([
   "image/gif",
   "image/avif",
 ]);
+
+function isBlobConfigured(): boolean {
+  return Boolean(process.env.BLOB_READ_WRITE_TOKEN);
+}
 
 // magic-byte check. we don't trust the client MIME header.
 function sniffMime(buf: Buffer): string | null {
@@ -79,6 +89,7 @@ export type UploadResult = {
  *   2. GIFs pass through unchanged (preserve animation)
  *   3. Everything else: sharp → downscale (if >MAX_WIDTH) → re-encode to webp
  *   4. Generate a tiny LQIP base64 for blur placeholders
+ *   5. Persist via blob or local fs depending on env
  */
 export async function saveUploadedImage(file: File): Promise<UploadResult> {
   if (file.size === 0) throw new Error("empty file");
@@ -91,16 +102,12 @@ export async function saveUploadedImage(file: File): Promise<UploadResult> {
     throw new Error("not a recognized image format");
   }
 
-  await fs.mkdir(UPLOAD_DIR, { recursive: true });
-
   const stem = `${new Date().toISOString().slice(0, 10)}-${newId(10)}`;
 
   // --- GIF: keep as-is to preserve animation ---
   if (mime === "image/gif") {
     const name = `${stem}.gif`;
-    const dest = path.join(UPLOAD_DIR, name);
-    await fs.writeFile(dest, inputBuf, { mode: 0o644 });
-    // best-effort metadata (static frame metadata from sharp)
+    // best-effort metadata
     let width = 0;
     let height = 0;
     try {
@@ -111,8 +118,9 @@ export async function saveUploadedImage(file: File): Promise<UploadResult> {
       /* ignore */
     }
     const placeholder = await makeLqip(inputBuf).catch(() => "");
+    const url = await persist(name, inputBuf, "image/gif");
     return {
-      url: `/uploads/${name}`,
+      url,
       size: inputBuf.length,
       width,
       height,
@@ -143,13 +151,11 @@ export async function saveUploadedImage(file: File): Promise<UploadResult> {
   const height = outMeta.height ?? srcHeight;
 
   const name = `${stem}.webp`;
-  const dest = path.join(UPLOAD_DIR, name);
-  await fs.writeFile(dest, outBuf, { mode: 0o644 });
-
   const placeholder = await makeLqip(outBuf).catch(() => "");
+  const url = await persist(name, outBuf, "image/webp");
 
   return {
-    url: `/uploads/${name}`,
+    url,
     size: outBuf.length,
     width,
     height,
@@ -158,6 +164,42 @@ export async function saveUploadedImage(file: File): Promise<UploadResult> {
     originalMime: mime,
     originalSize: file.size,
   };
+}
+
+// ---------- persistence dispatch ----------
+
+async function persist(
+  filename: string,
+  body: Buffer,
+  contentType: string,
+): Promise<string> {
+  if (isBlobConfigured()) {
+    return persistToBlob(filename, body, contentType);
+  }
+  return persistToLocalFs(filename, body);
+}
+
+async function persistToLocalFs(filename: string, body: Buffer): Promise<string> {
+  await fs.mkdir(UPLOAD_DIR, { recursive: true });
+  const dest = path.join(UPLOAD_DIR, filename);
+  await fs.writeFile(dest, body, { mode: 0o644 });
+  return `/uploads/${filename}`;
+}
+
+async function persistToBlob(
+  filename: string,
+  body: Buffer,
+  contentType: string,
+): Promise<string> {
+  // dynamic import so local-only installs without @vercel/blob still work
+  // if the user removes it from deps; package is in dependencies though.
+  const { put } = await import("@vercel/blob");
+  const result = await put(`uploads/${filename}`, body, {
+    access: "public",
+    contentType,
+    addRandomSuffix: false, // our names already include random bits
+  });
+  return result.url;
 }
 
 async function makeLqip(buf: Buffer): Promise<string> {
